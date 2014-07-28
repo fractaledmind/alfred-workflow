@@ -1567,9 +1567,9 @@ class Workflow(object):
 
         return time.time() - os.stat(cache_path).st_mtime
 
-    def filter(self, query, items, key=lambda x: x, ascending=False,
-               include_score=False, min_score=0, max_results=0,
-               match_on=MATCH_ALL, fold_diacritics=True):
+    def filter(self, query, items, key=lambda x: x, empty_query='',
+               ascending=False, include_score=False, min_score=0, 
+               max_results=0, match_on=MATCH_ALL, fold_diacritics=True):
         """Fuzzy search filter. Returns list of ``items`` that match ``query``.
 
         ``query`` is case-insensitive. Any item that does not contain the
@@ -1652,6 +1652,10 @@ class Workflow(object):
         # Remove preceding/trailing spaces
         query = query.strip()
 
+        # Return full data set if query is empty
+        if query == empty_query:
+            return items
+
         # Use user override if there is one
         fold_diacritics = self.settings.get('__workflow_diacritic_folding',
                                             fold_diacritics)
@@ -1694,6 +1698,9 @@ class Workflow(object):
 
         if min_score:
             results = [r for r in results if r[1] > min_score]
+
+        if ascending:
+            results = results.reverse()
 
         # return list of ``(item, score, rule)``
         if include_score:
