@@ -38,7 +38,7 @@ Your workflow should start out like this. This enables :class:`Workflow`
 to capture any errors thrown by your scripts:
 
 .. code-block:: python
-   :linenos:
+    :linenos:
 
     #!/usr/bin/python
     # encoding: utf-8
@@ -90,7 +90,7 @@ Simply create a ``lib`` subdirectory under your Workflow's root directory
 (or call it whatever you want), install your dependencies there with
 
 .. code-block:: bash
-   :linenos:
+    :linenos:
 
     pip install --target=my-workflow-root-dir/lib python-lib-name
 
@@ -98,7 +98,7 @@ and instantiate :class:`Workflow <workflow.workflow.Workflow>`
 with the ``libraries`` argument:
 
 .. code-block:: python
-   :linenos:
+    :linenos:
 
     from workflow import Workflow
 
@@ -109,6 +109,8 @@ with the ``libraries`` argument:
         wf = Workflow(libraries=['./lib'])
         sys.exit(wf.run(main))
 
+
+.. _persistent-data:
 
 Persistent data
 ===============
@@ -123,7 +125,21 @@ attributes/methods to make it easier to access these directories:
 - :meth:`datafile(filename) <workflow.workflow.Workflow.datafile>` — The full path to ``filename`` under the data directory.
 - :meth:`cachefile(filename) <workflow.workflow.Workflow.cachefile>` — The full path to ``filename`` under the cache directory.
 
-There are also corresponding features related to the root directory of your Workflow
+The cache directory may be deleted during system maintenance, and is thus only
+suitable for temporary data or data that is easily recreated.
+:class:`Workflow <workflow.workflow.Workflow>`'s cache methods reflect this,
+and make it easy to replace cached data that are too old.
+See :ref:`Caching data <caching-data>` for more details.
+
+The data directory is intended for more permanent, user-generated data, or data
+that cannot be otherwise easily recreated. See :ref:`Storing data <storing-data>`
+for details.
+
+It is easy to specify a custom file format for your stored data
+via the ``serializer`` argument if you want your data to be readable by the user
+or by other software. See :ref:`Serialization <serialization>` for more details.
+
+There are also simliar methods related to the root directory of your Workflow
 (where ``info.plist`` and your code are):
 
 - :attr:`~workflow.workflow.Workflow.workflowdir` — The full path to your Workflow's root directory.
@@ -135,7 +151,88 @@ may help you with development/debugging.
 In addition, :class:`Workflow <workflow.workflow.Workflow>` also provides a
 convenient interface for storing persistent settings with
 :attr:`Workflow.settings <workflow.workflow.Workflow.settings>`.
+See :ref:`Settings <settings>` and :ref:`Keychain access <keychain>` for more
+information on storing settings and sensitive data.
 
+.. _caching-data:
+
+Caching data
+------------
+
+:class:`Workflow <workflow.workflow.Workflow>` provides a few methods to simplify
+caching data that is slow to retrieve or expensive to generate (e.g. downloaded
+from a web API). These data are cached in your workflow's cache directory (see
+:attr:`~workflow.workflow.Workflow.cachedir`). The main method is
+:meth:`Workflow.cached_data() <workflow.workflow.Workflow.cached_data>`, which
+takes a name under which the data should be cached, a callable to retrieve
+the data if they aren't in the cache (or are too old), and a maximum age in seconds
+for the cached data:
+
+.. code-block:: python
+    :linenos:
+
+    from workflow import web, Workflow
+
+    def get_data():
+        return web.get('https://example.com/api/stuff').json()
+
+    wf = Workflow()
+    data = wf.cached_data('stuff', get_data, max_age=600)
+
+To retrieve data only if they are in the cache, call with ``None`` as the
+data-retrieval function (which is the default):
+
+.. code-block:: python
+    :linenos:
+
+    data = wf.cached_data('stuff', max_age=600)
+
+**Note**: This will return ``None`` if there are no corresponding data in the
+cache.
+
+This is useful if you want to update your cache in the background, so it doesn't
+impact your Workflow's responsiveness in Alfred. (See
+:ref:`the tutorial <background-updates>` for an example of how to run an update
+script in the background.)
+
+Passing ``max_age=0`` will return the cached data regardless of age.
+
+
+.. _storing-data:
+
+Storing data
+------------
+
+:class:`Workflow <workflow.workflow.Workflow>` provides two methods to store
+and retrieve permanent data:
+:meth:`store_data() <workflow.workflow.Workflow.store_data>` and
+:meth:`stored_data() <workflow.workflow.Workflow.stored_data>`.
+
+These data are stored in your workflow's data directory
+(see :attr:`~workflow.workflow.Workflow.datadir`).
+
+.. code-block:: python
+    :linenos:
+
+    from workflow import Workflow
+
+    wf = Workflow()
+    wf.store_data('name', data)
+    # data will be `None` if there is nothing stored under `name`
+    data = wf.stored_data('name')
+
+These methods do not support the data expiry features of the cached data methods,
+but you can specify your own serializer for each datastore, making it simple
+to store data in, e.g., JSON or YAML format.
+
+You should use these methods (and not the data caching ones) if the data you
+are saving should not be deleted as part of system maintenance.
+
+If you want to specify your own file format/serializer, please see
+:ref:`Serialization <serialization>` for details.
+
+
+.. _howto-settings:
 
 Settings
 --------
@@ -145,7 +242,21 @@ of :class:`dict` that automatically saves its contents to the ``settings.json``
 file in your Workflow's data directory when it is changed.
 
 :class:`~workflow.workflow.Settings` can be used just like a normal :class:`dict`
-with the caveat that all keys and values must be serialisable to JSON.
+with the caveat that all keys and values must be serializable to JSON.
+
+**Note:** A :class:`~workflow.workflow.Settings` instance can only automatically
+recognise when you directly alter the values of its own keys:
+
+.. code-block:: python
+    :linenos:
+
+    wf = Workflow()
+    wf.settings['key'] = {'key2': 'value'}  # will be automatically saved
+    wf.settings['key']['key2'] = 'value2'  # will *not* be automatically saved
+
+If you've altered a data structure stored within your workflow's
+:attr:`Workflow.settings <workflow.workflow.Workflow.settings>`, you need to
+explicitly call :meth:`Workflow.settings.save() <workflow.workflow.Settings.save>`.
 
 If you need to store arbitrary data, you can use the :ref:`cached data API <caching-data>`.
 
@@ -153,6 +264,8 @@ If you need to store data securely (such as passwords and API keys),
 :class:`Workflow <workflow.workflow.Workflow>` also provides simple access to
 the OS X Keychain.
 
+
+.. _keychain:
 
 Keychain access
 ---------------
@@ -172,7 +285,7 @@ methods.
 Example usage:
 
 .. code-block:: python
-   :linenos:
+    :linenos:
 
     from workflow import Workflow
 
@@ -189,50 +302,6 @@ Example usage:
 
 
 See :ref:`the relevant part of the tutorial <secure-settings>` for a full example.
-
-
-
-.. _caching-data:
-
-Caching data
-------------
-
-:class:`Workflow <workflow.workflow.Workflow>` provides a few methods to simplify
-caching data that is slow to retrieve or expensive to generate. The main method
-is :meth:`Workflow.cached_data() <workflow.workflow.Workflow.cached_data>`, which
-takes a name under which the data should be cached, a callable to retrieve
-the data if they aren't in the cache (or are too old), and a maximum age in seconds
-for the cached data:
-
-.. code-block:: python
-   :linenos:
-
-    from workflow import web, Workflow
-
-    def get_data():
-        return web.get('https://example.com/api/stuff').json()
-
-    wf = Workflow()
-    data = wf.cached_data('stuff', get_data, max_age=600)
-
-To only retrieve data if they are in the cache, call with ``None`` as the
-data-retrieval function (which is the default):
-
-.. code-block:: python
-   :linenos:
-
-    data = wf.cached_data('stuff', max_age=600)
-
-**Note**: This will return ``None`` if there are no corresponding data in the
-cache.
-
-This is useful if you want to update your cache in the background, so it doesn't
-impact your Workflow's responsiveness in Alfred. (See
-:ref:`the tutorial <background-updates>` for an example of how to run an update
-script in the background.)
-
-Passing ``max_age=0`` will return the cached data regardless of age.
-
 
 
 .. _filtering:
@@ -261,7 +330,7 @@ other than strings, a ``key`` function that generates a string search key for
 each item:
 
 .. code-block:: python
-   :linenos:
+    :linenos:
 
     from workflow import Workflow
 
@@ -281,8 +350,8 @@ Which returns::
 If your data are not strings:
 
 .. code-block:: python
-   :emphasize-lines: 11-12,16
-   :linenos:
+    :emphasize-lines: 11-12,16
+    :linenos:
 
     from workflow import Workflow
 
@@ -316,7 +385,7 @@ Chances are, you would not want ``bot`` to match ``Bob Smith A damn fine afterno
 at all, or indeed any of the other books. Indeed, they have very low scores:
 
 .. code-block:: python
-   :linenos:
+    :linenos:
 
     hits = wf.filter('bot', books, key_for_book, include_score=True)
 
@@ -348,14 +417,14 @@ So in all likelihood, you'll want to pass a ``min_score`` argument to
 :meth:`Workflow.filter() <workflow.workflow.Workflow.filter>`:
 
 .. code-block:: python
-   :linenos:
+    :linenos:
 
     hits = wf.filter('bot', books, key_for_book, min_score=20)
 
 and/or exclude some of the matching rules:
 
 .. code-block:: python
-   :linenos:
+    :linenos:
 
     from workflow import Workflow, MATCH_ALL, MATCH_ALLCHARS
 
@@ -367,7 +436,7 @@ You can set match rules using bitwise operators, so ``|`` to combine them or
 ``^`` to remove them from ``MATCH_ALL``:
 
 .. code-block:: python
-   :linenos:
+    :linenos:
 
     # match only CamelCase and initials
     match_on=MATCH_CAPITALS | MATCH_INITIALS
@@ -423,6 +492,144 @@ or to :class:`Workflow <workflow.workflow.Workflow>` on instantiation and then
 normalised.
 
 
+.. _background-processes:
+
+Background processes
+====================
+
+Many workflows provide a convenient interface to applications and/or web services.
+
+For performance reasons, it's common for workflows to cache data locally, but
+updating this cache typically takes a few seconds, making your workflow
+unresponsive while an update is occurring, which is very un-Alfred-like.
+
+To avoid such delays, **Alfred-Workflow** provides the :mod:`~workflow.background`
+module to allow you to easily run scripts in the background.
+
+There are two functions, :func:`~workflow.background.run_in_background` and
+:func:`~workflow.background.is_running`, that provide the interface. The
+processes started are proper background daemon processes, so you can start
+proper servers as easily as simple scripts.
+
+Here's an example of a common usage pattern (updating cached data in the
+background). What we're doing is:
+
+1. Check the age of the cached data and run the update script via
+    :func:`~workflow.background.run_in_background` if the cached data are too old
+    or don't exist.
+2. (Optionally) inform the user that data are being updated.
+3. Load the cached data regardless of age.
+4. Display the cached data (if any).
+
+..  code-block:: python
+    :linenos:
+
+    from workflow import Workflow, ICON_INFO
+    from workflow.background import run_in_background, is_running
+
+    def main(wf):
+       # Is cache over 6 hours old or non-existent?
+       if not wf.cached_data_fresh('exchange-rates', 3600):
+           run_in_background('update',
+                             ['/usr/bin/python',
+                              wf.workflowfile('update_exchange_rates.py')])
+
+       # Add a notification if the script is running
+       if is_running('update'):
+           wf.add_item('Updating exchange rates...', icon=ICON_INFO)
+
+       exchange_rates = wf.cached_data('exchage-rates')
+
+       # Display (possibly stale) cache data
+       if exchange_rates:
+           for rate in exchange_rates:
+               wf.add_item(rate)
+
+       # Send results to Alfred
+       wf.send_feedback()
+
+    if __name__ == '__main__':
+       wf = Workflow()
+       wf.run(main)
+
+For a working example, see :ref:`Part 2 of the Tutorial <background-updates>` or
+the `source code <https://github.com/deanishe/alfred-repos/blob/master/src/repos.py>`_
+of my `Git Repos <https://github.com/deanishe/alfred-repos>`_ workflow,
+which is a bit smarter about showing the user update information.
+
+
+.. _serialization:
+
+Serialization
+=============
+
+By default, both cache and data files are cached using :mod:`cPickle`. This
+provides a great compromise in terms of speed and ability to store arbitrary
+objects.
+
+When it comes to cache data, it is strongly recommended to stick with
+the default. :mod:`cPickle` is very fast and fully supports standard Python
+data structures (``dict``, ``list``, ``tuple``, ``set`` etc.).
+
+If you need the ability to customise caching, you can change the default
+cache serialization format to :mod:`pickle` thus:
+
+.. code-block:: python
+    :linenos:
+
+    wf = Workflow()
+    wf.cache_serializer = 'pickle'
+
+In the case of stored data, you are free to specify either a global default
+serializer of one for each individual datastore:
+
+.. code-block:: python
+    :linenos:
+
+    wf = Workflow()
+    # Use `pickle` as the global default serializer
+    wf.data_serializer = 'pickle'
+
+    # Use the JSON serializer only for these data
+    wf.store_data('name', data, serializer='json')
+
+This is primarily so you can create files that are human-readable or useable
+by non-Python programs.
+
+By default, ``cpickle``, ``pickle`` and ``json`` serializers are available.
+
+You can also register your own custom serializers using the
+:class:`~workflow.workflow.SerializerManager` interface.
+
+To register a new serializer, call the ``register`` method of the ``workflow.manager``
+object:
+
+.. code-block:: python
+    :linenos:
+
+    from workflow import Workflow, manager
+
+    wf = Workflow()
+    manager.register('myformat', object_with_load_and_dump_methods)
+
+    wf.store_data('name', data, serializer='myformat')
+
+A serializer *must* conform to this interface (like :mod:`json` and :mod:`pickle`):
+
+.. code-block:: python
+    :linenos:
+
+    serializer.load(file_obj)
+    serializer.dump(obj, file_obj)
+
+
+**Note:** The name you use for your serializer will be the file extension
+of the stored file.
+
+The :meth:`stored_data() <workflow.workflow.Workflow.stored_data>` method can
+automatically determine the serialization of the stored data, provided the
+corresponding serializer is registered. If it isn't, an exception will be raised.
+
 
 Built-in icons
 ==============
@@ -431,7 +638,7 @@ The :mod:`~workflow.workflow` module provides access to a number of default
 OS X icons via ``ICON_*`` constants for use when generating Alfred feedback:
 
 .. code-block:: python
-   :linenos:
+    :linenos:
 
     from workflow import Workflow, ICON_INFO
 
@@ -525,11 +732,14 @@ are parsed).
 - ``workflow:opendata`` — Open the Workflow's data directory.
 - ``workflow:openworkflow`` — Open the Workflow's root directory (where ``info.plist`` is).
 - ``workflow:openterm`` — Open a Terminal window in the Workflow's root directory.
-- ``workflow:delcache`` — Delete any data cached by the Workflow.
+- ``workflow:reset`` — Delete the Workflow's settings, cache and saved data.
+- ``workflow:delcache`` — Delete the Workflow's cache.
+- ``workflow:deldata`` — Delete the Workflow's saved data.
 - ``workflow:delsettings`` — Delete the Workflow's settings file (which contains the data stored using :attr:`Workflow.settings <workflow.workflow.Workflow.settings>`).
 - ``workflow:foldingon`` — Force diacritic folding in search keys (e.g. convert *ü* to *ue*)
 - ``workflow:foldingoff`` — Never fold diacritics in search keys
 - ``workflow:foldingdefault`` — Reset diacritic folding to workflow default
+- ``workflow:update`` — Self-update workflow if auto update feature is enabled
 
 The three ``workflow:folding…`` settings allow users to override the diacritic
 folding set by a workflow's author. This may be useful if the author's choice

@@ -27,11 +27,14 @@ import time
 from xml.etree import ElementTree as ET
 from unicodedata import normalize
 
+from util import create_info_plist, delete_info_plist
+
 from workflow.workflow import (Workflow, Settings, PasswordNotFound,
                                KeychainError, MATCH_ALL, MATCH_ALLCHARS,
                                MATCH_ATOM, MATCH_CAPITALS, MATCH_STARTSWITH,
                                MATCH_SUBSTRING, MATCH_INITIALS_CONTAIN,
-                               MATCH_INITIALS_STARTSWITH)
+                               MATCH_INITIALS_STARTSWITH,
+                               manager)
 
 # info.plist settings
 BUNDLE_ID = 'net.deanishe.alfred-workflow'
@@ -47,6 +50,85 @@ def setUp():
 
 def tearDown():
     pass
+
+
+class SerializerTests(unittest.TestCase):
+
+    def setUp(self):
+        self.serializers = ['json', 'cpickle', 'pickle']
+        self.tempdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        if os.path.exists(self.tempdir):
+            shutil.rmtree(self.tempdir)
+
+    def _is_serializer(self, obj):
+        self.assertTrue(hasattr(obj, 'load'))
+        self.assertTrue(hasattr(obj, 'dump'))
+
+    def test_default_serializers(self):
+        """Default serializers"""
+        for name in self.serializers:
+            self._is_serializer(manager.serializer(name))
+
+        self.assertEqual(set(self.serializers), set(manager.serializers))
+
+    def test_serialization(self):
+        """Dump/load data"""
+        data = {'arg1': 'value1', 'arg2': 'value2'}
+
+        for name in self.serializers:
+            serializer = manager.serializer(name)
+            path = os.path.join(self.tempdir, 'test.{}'.format(name))
+            self.assertFalse(os.path.exists(path))
+
+            with open(path, 'wb') as file_obj:
+                serializer.dump(data, file_obj)
+
+            self.assertTrue(os.path.exists(path))
+
+            with open(path, 'rb') as file_obj:
+                data2 = serializer.load(file_obj)
+
+            self.assertEqual(data, data2)
+
+            os.unlink(path)
+
+    def test_register_unregister(self):
+        """Register/unregister serializers"""
+        serializers = {}
+        for name in self.serializers:
+            serializer = manager.serializer(name)
+            self._is_serializer(serializer)
+
+        for name in self.serializers:
+            serializer = manager.unregister(name)
+            self._is_serializer(serializer)
+            serializers[name] = serializer
+
+        for name in self.serializers:
+            self.assertEqual(manager.serializer(name), None)
+
+        for name in self.serializers:
+            with self.assertRaises(ValueError):
+                manager.unregister(name)
+
+        for name in self.serializers:
+            serializer = serializers[name]
+            manager.register(name, serializer)
+
+    def test_register_invalid(self):
+        """Register invalid serializer"""
+        class Thing(object):
+            pass
+        invalid1 = Thing()
+        invalid2 = Thing()
+        setattr(invalid2, 'load', lambda x: x)
+
+        with self.assertRaises(AttributeError):
+            manager.register('bork', invalid1)
+        with self.assertRaises(AttributeError):
+            manager.register('bork', invalid2)
 
 
 class WorkflowTests(unittest.TestCase):
@@ -81,16 +163,44 @@ class WorkflowTests(unittest.TestCase):
             ('salé', 'sale')
         ]
 
+        self.env_data = {
+            'alfred_preferences':
+            os.path.expanduser('~/Dropbox/Alfred/Alfred.alfredpreferences'),
+            'alfred_preferences_localhash':
+            b'adbd4f66bc3ae8493832af61a41ee609b20d8705',
+            'alfred_theme': b'alfred.theme.yosemite',
+            'alfred_theme_background': b'rgba(255,255,255,0.98)',
+            'alfred_theme_subtext': b'3',
+            'alfred_version': b'2.4',
+            'alfred_version_build': b'277',
+            'alfred_workflow_bundleid': b'com.alfredapp.david.googlesuggest',
+            'alfred_workflow_cache':
+            os.path.expanduser('~/Library/Caches/com.runningwithcrayons.'
+                               'Alfred-2/Workflow Data/com.alfredapp.david'
+                               '.googlesuggest'),
+            'alfred_workflow_data':
+            os.path.expanduser('~/Library/Application Support/Alfred 2/'
+                               'Workflow Data/com.alfredapp.david.'
+                               'googlesuggest'),
+            'alfred_workflow_name': b'Google Suggest',
+            'alfred_workflow_uid':
+            b'user.workflow.B0AC54EC-601C-479A-9428-01F9FD732959',
+        }
+
     def tearDown(self):
-        self.wf.clear_cache()
-        self.wf.clear_settings()
+        self.wf.reset()
         try:
             self.wf.delete_password(self.account)
         except PasswordNotFound:
             pass
+
         for dirpath in (self.wf.cachedir, self.wf.datadir):
             if os.path.exists(dirpath):
                 shutil.rmtree(dirpath)
+
+        for key in self.env_data:
+            if key in os.environ:
+                del os.environ[key]
 
     def test_item_creation(self):
         """XML generation"""
@@ -98,7 +208,8 @@ class WorkflowTests(unittest.TestCase):
                          autocomplete='autocomplete',
                          valid=True, uid='uid', icon='icon.png',
                          icontype='fileicon',
-                         type='file')
+                         type='file', largetext='largetext',
+                         copytext='copytext')
         stdout = sys.stdout
         sio = StringIO()
         sys.stdout = sio
@@ -108,19 +219,34 @@ class WorkflowTests(unittest.TestCase):
         sio.close()
         from pprint import pprint
         pprint(output)
+
         root = ET.fromstring(output)
         item = list(root)[0]
+
         self.assertEqual(item.attrib['uid'], 'uid')
         self.assertEqual(item.attrib['autocomplete'], 'autocomplete')
         self.assertEqual(item.attrib['valid'], 'yes')
         self.assertEqual(item.attrib['uid'], 'uid')
-        title, subtitle, arg, icon = list(item)
+
+        title, subtitle, arg, icon, largetext, copytext = list(item)
+
         self.assertEqual(title.text, 'title')
         self.assertEqual(title.tag, 'title')
+
         self.assertEqual(subtitle.text, 'subtitle')
         self.assertEqual(subtitle.tag, 'subtitle')
+
         self.assertEqual(arg.text, 'arg')
         self.assertEqual(arg.tag, 'arg')
+
+        self.assertEqual(largetext.tag, 'text')
+        self.assertEqual(largetext.text, 'largetext')
+        self.assertEqual(largetext.attrib['type'], 'largetype')
+
+        self.assertEqual(copytext.tag, 'text')
+        self.assertEqual(copytext.text, 'copytext')
+        self.assertEqual(copytext.attrib['type'], 'copy')
+
         self.assertEqual(icon.text, 'icon.png')
         self.assertEqual(icon.tag, 'icon')
         self.assertEqual(icon.attrib['type'], 'fileicon')
@@ -210,6 +336,34 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(self.wf.name, WORKFLOW_NAME)
         self.assertEqual(self.wf.bundleid, BUNDLE_ID)
 
+    def test_info_plist_missing(self):
+        """Info.plist missing"""
+        delete_info_plist()
+        try:
+            with self.assertRaises(IOError):
+                Workflow()
+        finally:
+            create_info_plist()
+
+    def test_alfred_env_vars(self):
+        """Alfred environmental variables"""
+
+        for key in self.env_data:
+            os.environ[key] = self.env_data[key]
+
+        for key in self.env_data:
+            value = self.env_data[key]
+            key = key.replace('alfred_', '')
+            self.assertEqual(value, self.wf.alfred_env[key])
+
+        self.assertEqual(self.wf.datadir, self.env_data['alfred_workflow_data'])
+        self.assertEqual(self.wf.cachedir,
+                         self.env_data['alfred_workflow_cache'])
+        self.assertEqual(self.wf.bundleid,
+                         self.env_data['alfred_workflow_bundleid'])
+        self.assertEqual(self.wf.name,
+                         self.env_data['alfred_workflow_name'])
+
     def test_args(self):
         """ARGV"""
         args = ['arg1', 'arg2', 'füntíme']
@@ -239,16 +393,6 @@ class WorkflowTests(unittest.TestCase):
         # cache original sys.argv
         oargs = sys.argv[:]
 
-        # # openlog
-        # sys.argv = [oargs[0]] + [b'workflow:openlog']
-        # try:
-        #     wf = Workflow()
-        #     wf.logger.debug('This is a test message')  # ensure log file exists
-        #     with self.assertRaises(SystemExit):
-        #         wf.args
-        # finally:
-        #     sys.argv = oargs[:]
-
         # delsettings
         sys.argv = [oargs[0]] + [b'workflow:delsettings']
         try:
@@ -272,10 +416,10 @@ class WorkflowTests(unittest.TestCase):
             cachepath = wf.cachefile('somedir')
             os.makedirs(cachepath)
             wf.cached_data('test', somedata)
-            self.assertTrue(os.path.exists(wf.cachefile('test.cache')))
+            self.assertTrue(os.path.exists(wf.cachefile('test.cpickle')))
             with self.assertRaises(SystemExit):
                 wf.args
-            self.assertFalse(os.path.exists(wf.cachefile('test.cache')))
+            self.assertFalse(os.path.exists(wf.cachefile('test.cpickle')))
         finally:
             sys.argv = oargs[:]
 
@@ -299,7 +443,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(data, d)
         ret = self.wf.cache_data('test', None)
         self.assertEquals(ret, None)
-        self.assertFalse(os.path.exists(self.wf.cachefile('test.cache')))
+        self.assertFalse(os.path.exists(self.wf.cachefile('test.cpickle')))
         # Test alternate code path for non-existent file
         self.assertEqual(self.wf.cache_data('test', None), None)
 
@@ -357,9 +501,169 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue(self.wf.cached_data_fresh('test', max_age=10))
 
     def test_cache_fresh_non_existent(self):
-        """Non-existant cache data is not fresh"""
+        """Non-existent cache data is not fresh"""
         self.assertEqual(self.wf.cached_data_fresh('popsicle', max_age=10000),
                          False)
+
+    def test_cache_serializer(self):
+        """Cache serializer"""
+        self.assertEqual(self.wf.cache_serializer, 'cpickle')
+        with self.assertRaises(ValueError):
+            self.wf.cache_serializer = 'non-existent'
+        self.assertEqual(self.wf.cache_serializer, 'cpickle')
+        self.wf.cache_serializer = 'pickle'
+        self.assertEqual(self.wf.cache_serializer, 'pickle')
+
+    def test_alternative_cache_serializer(self):
+        """Alternative cache serializer"""
+        data = {'key1': 'value1'}
+        self.assertEqual(self.wf.cache_serializer, 'cpickle')
+        self.wf.cache_data('test', data)
+        self.assertTrue(os.path.exists(self.wf.cachefile('test.cpickle')))
+        self.assertEqual(data, self.wf.cached_data('test'))
+
+        self.wf.cache_serializer = 'pickle'
+        self.assertEqual(None, self.wf.cached_data('test'))
+        self.wf.cache_data('test', data)
+        self.assertTrue(os.path.exists(self.wf.cachefile('test.pickle')))
+        self.assertEqual(data, self.wf.cached_data('test'))
+
+        self.wf.cache_serializer = 'json'
+        self.assertEqual(None, self.wf.cached_data('test'))
+        self.wf.cache_data('test', data)
+        self.assertTrue(os.path.exists(self.wf.cachefile('test.json')))
+        self.assertEqual(data, self.wf.cached_data('test'))
+
+    def test_custom_cache_serializer(self):
+        """Custom cache serializer"""
+        data = {'key1': 'value1'}
+
+        class MySerializer(object):
+            @classmethod
+            def load(self, file_obj):
+                return json.load(file_obj)
+
+            @classmethod
+            def dump(self, obj, file_obj):
+                return json.dump(obj, file_obj, indent=2)
+
+        manager.register('spoons', MySerializer)
+        self.assertFalse(os.path.exists(self.wf.cachefile('test.spoons')))
+        self.wf.cache_serializer = 'spoons'
+        self.wf.cache_data('test', data)
+        self.assertTrue(os.path.exists(self.wf.cachefile('test.spoons')))
+        self.assertEqual(data, self.wf.cached_data('test'))
+
+    def test_data_serializer(self):
+        """Data serializer"""
+        self.assertEqual(self.wf.data_serializer, 'cpickle')
+        with self.assertRaises(ValueError):
+            self.wf.data_serializer = 'non-existent'
+        self.assertEqual(self.wf.data_serializer, 'cpickle')
+        self.wf.data_serializer = 'pickle'
+        self.assertEqual(self.wf.data_serializer, 'pickle')
+
+    def test_alternative_data_serializer(self):
+        """Alternative data serializer"""
+        data = {'key7': 'value7'}
+
+        self.assertEqual(self.wf.data_serializer, 'cpickle')
+        self.wf.store_data('test', data)
+        for path in self._stored_data_paths('test', 'cpickle'):
+            self.assertTrue(os.path.exists(path))
+        self.assertEqual(data, self.wf.stored_data('test'))
+
+        self.wf.data_serializer = 'pickle'
+        self.assertEqual(data, self.wf.stored_data('test'))
+        self.wf.store_data('test', data)
+        for path in self._stored_data_paths('test', 'pickle'):
+            self.assertTrue(os.path.exists(path))
+        self.assertEqual(data, self.wf.stored_data('test'))
+
+        self.wf.data_serializer = 'json'
+        self.assertEqual(data, self.wf.stored_data('test'))
+        self.wf.store_data('test', data)
+        for path in self._stored_data_paths('test', 'json'):
+            self.assertTrue(os.path.exists(path))
+        self.assertEqual(data, self.wf.stored_data('test'))
+
+    def test_non_existent_stored_data(self):
+        """Non-existent stored data"""
+        self.assertIsNone(self.wf.stored_data('banjo magic'))
+
+    def test_borked_stored_data(self):
+        """Borked stored data"""
+        data = {'key7': 'value7'}
+
+        self.wf.store_data('test', data)
+        metadata, datapath = self._stored_data_paths('test', 'cpickle')
+        os.unlink(metadata)
+        self.assertEqual(self.wf.stored_data('test'), None)
+
+        self.wf.store_data('test', data)
+        metadata, datapath = self._stored_data_paths('test', 'cpickle')
+        os.unlink(datapath)
+        self.assertIsNone(self.wf.stored_data('test'))
+
+        self.wf.store_data('test', data)
+        metadata, datapath = self._stored_data_paths('test', 'cpickle')
+        with open(metadata, 'wb') as file_obj:
+            file_obj.write('bangers and mash')
+            self.wf.logger.debug('Changed format to `bangers and mash`')
+        with self.assertRaises(ValueError):
+            self.wf.stored_data('test')
+
+    def test_reject_settings(self):
+        """Disallow settings.json"""
+        data = {'key7': 'value7'}
+
+        self.wf.data_serializer = 'json'
+
+        with self.assertRaises(ValueError):
+            self.wf.store_data('settings', data)
+
+    def test_invalid_data_serializer(self):
+        """Invalid data serializer"""
+        data = {'key7': 'value7'}
+
+        with self.assertRaises(ValueError):
+            self.wf.store_data('test', data, 'spong')
+
+    def test_delete_stored_data(self):
+        """Delete stored data"""
+        data = {'key7': 'value7'}
+
+        paths = self._stored_data_paths('test', 'cpickle')
+
+        self.wf.store_data('test', data)
+        self.assertEqual(data, self.wf.stored_data('test'))
+        self.wf.store_data('test', None)
+        self.assertEqual(None, self.wf.stored_data('test'))
+
+        for p in paths:
+            self.assertFalse(os.path.exists(p))
+
+    def test_update(self):
+        """Workflow updating methods"""
+        self.assertFalse(self.wf.update_available)
+        self.wf = Workflow(update_info={
+            'github_slug': 'fniephaus/alfred-pocket',
+            'version': 'v0.0',
+            'frequency': 1,
+        })
+        # wait for background update check
+        time.sleep(2)
+        self.assertTrue(self.wf.update_available)
+        self.assertTrue(self.wf.start_update())
+        update_info = self.wf.cached_data('__workflow_update_available')
+        self.wf = Workflow(update_info={
+            'github_slug': 'fniephaus/alfred-pocket',
+            'version': update_info['version'],
+        })
+        # wait for background update check
+        time.sleep(2)
+        self.assertFalse(self.wf.update_available)
+        self.assertFalse(self.wf.start_update())
 
     def test_keychain(self):
         """Save/get/delete password"""
@@ -473,7 +777,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_filter_folding_force_on(self):
         """Filter: diacritic folding forced on"""
-        self.wf.settings['__workflows_diacritic_folding'] = True
+        self.wf.settings['__workflow_diacritic_folding'] = True
         for key, query in self.search_items_diacritics:
             results = self.wf.filter(query, [key], min_score=90,
                                      include_score=True,
@@ -482,7 +786,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_filter_folding_force_off(self):
         """Filter: diacritic folding forced off"""
-        self.wf.settings['__workflows_diacritic_folding'] = False
+        self.wf.settings['__workflow_diacritic_folding'] = False
         for key, query in self.search_items_diacritics:
             results = self.wf.filter(query, [key], min_score=90,
                                      include_score=True)
@@ -523,6 +827,12 @@ class WorkflowTests(unittest.TestCase):
         """Print results of Workflow.filter"""
         for item, score, rule in results:
             print('{!r} (rule {}) : {}'.format(item[0], rule, score))
+
+    def _stored_data_paths(self, name, serializer):
+        """Return list of paths created when storing data"""
+        metadata = self.wf.datafile('.{}.alfred-workflow'.format(name))
+        datapath = self.wf.datafile('{}.{}'.format(name, serializer))
+        return [metadata, datapath]
 
 
 class SettingsTests(unittest.TestCase):
